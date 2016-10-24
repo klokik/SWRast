@@ -8,7 +8,7 @@ class Buffer
 public: size_t length;
 public: std::string name;
 
-public: enum class role {COLOR, DEPTH, STENCIL, VERTEX, INDEX, BITMAP, OTHER}: int;
+public: enum class role : int {COLOR = 1, DEPTH, STENCIL, VERTEX, INDEX, BITMAP, OTHER};
 
 public: void *data = nullptr;
 };
@@ -19,7 +19,7 @@ class Line2
   public: float b;
   public: float c;
 
-  public: Line(const vec2f p1, const vec2f p2);
+  public: Line2(const vec2f p1, const vec2f p2);
 
   public: float atY(const float _y) const
   {
@@ -45,7 +45,9 @@ class Triangle
 {
   private: vec3fi data[3];
 
-  public: Triangle(const vec3fi[3] & _data)
+  public: Triangle() = default;
+
+  public: Triangle(const vec3fi _data[3])
   {
     memcpy(&this->data[0], &_data[0], sizeof(vec3fi)*3);
 
@@ -79,8 +81,8 @@ class Triangle
   public: float left(const float _y) const noexcept
   {
     assert(this->isAligned())
-    assert(y >= this->top());
-    assert(y <= this->bottom());
+    assert(_y >= this->top());
+    assert(_y <= this->bottom());
 
     if (this->isDelta())
       return Line2(data[0].xy, data[1]).atY(_y);
@@ -90,9 +92,9 @@ class Triangle
 
   public: float right(const float _y) const noexcept
   {
-    assert(this->isAligned())
-    assert(y >= this->top());
-    assert(y <= this->bottom());
+    assert(this->isAligned());
+    assert(_y >= this->top());
+    assert(_y <= this->bottom());
 
     if (this->isDelta())
       return Line2(data[0].xy, data[2]).atY(_y);
@@ -123,7 +125,7 @@ class Triangle
 
   public: std::pair<Triangle, Triangle> split()
   {
-    assert(!this->aligned());
+    assert(!this->isAligned());
 
 
     vec2f split_point2(Line2(data[0].xy, data[1].xy).atY(data[1].y), data[1].y);
@@ -131,8 +133,8 @@ class Triangle
 
     vec3fi split_point(vec3f::lerp(data[0].xyz, data[2].xyz, t), -1);
 
-    Triangle delta(data[0], data[1], split_point);
-    Triangle nabla(data[1], split_point, data[2]);
+    Triangle delta{{data[0], data[1], split_point}};
+    Triangle nabla{{data[1], split_point, data[2]}};
 
     if (delta.data[2].x > delta.data[1].x)
       std::swap(delta.data[1], delta.data[2]);
@@ -147,33 +149,33 @@ using Soup = std::vector<Triangle>;
 
 class Scanline
 {
-public: struct Record {
-    int num;
+  public: struct Record {
     float start;
     float end;
     float depth_start;
     float depth_end;
   };
 
-public: std::vector<Record> items;
+  int id;
+  public: std::vector<Record> items;
 };
 
 template<typename T>
-class Rect<T>
+class Rect
 {
   public: T left;
   public: T top;
   public: T right;
   public: T bottom;
 
-  public: Rect(const T _left, const T _top, const T _right, cont T _bottom):
+  public: Rect(const T _left, const T _top, const T _right, const T _bottom):
     left(_left), top(_top), right(_right), bottom(_bottom)
   {
   }
 
-  public: T width() const noexcept { return _right - _left + 1; };
-  public: T height()  const noexcept { return _bottom - _top + 1; };
-}
+  public: T width() const noexcept { return right - left + 1; };
+  public: T height()  const noexcept { return bottom - top + 1; };
+};
 
 using Recti = Rect<int>;
 
@@ -182,7 +184,7 @@ inline bool inRange(const T _val, const T _start, const T _end) { return (_val >
 
 class Rasterizer
 {
-  public: resterize(Soup & _triangles, const Buffer & _dst, const Recti _dst_rect)
+  public: void resterize(Soup & _triangles, const Buffer & _dst, const Recti _dst_rect)
   {
     std::vector<Scanline> line_batch(_dst_rect.height());
 
@@ -206,7 +208,7 @@ class Rasterizer
       for (int i = triag.top(); i <= triag.bottom; ++i)
       {
         float t = (i-triag.top()) / (triag.bottom()-triag.top());
-        assert(inRange(t, 0, 1));
+        assert(inRange(t, 0.f, 1.f));
 
         if (triag.isNabla())
           t = 1-t;
@@ -215,25 +217,29 @@ class Rasterizer
         vec3f end = vec3f::lerp(triag.peak(), triag.right(), t);
 
         Scanline::Record sl_record = {
-          .num = i,
           .start = start.x,
           .end = end.x,
           .depth_start = start.z,
           .depth_end = end.z
         };
 
-        line_batch[i].push_back(sl_record);
+        // FIXME: init id once
+        line_batch[i].id = i;
+        line_batch[i].items.push_back(sl_record);
       }
     }
 
     // draw scanlines
     assert(_dst_rect.left == 0 && _dst_rect.top == 0);
-    for (auto line : line_batch)
+    for (auto & line : line_batch)
     {
-      for (int i = line.start; i <= line.end; ++i)
+      for (auto record : line.items)
       {
-        int id = _dst_rect.width*line.num+i;
-        _dst.data[id] = 128;
+        for (int i = line.start; i <= line.end; ++i)
+        {
+          int id = _dst_rect.width*line.num+i;
+          static_cast<uint8_t*>(_dst.data)[id] = 127;
+        }
       }
     }
   }
@@ -245,9 +251,9 @@ class Display
   {
     // FIXME: use _roi location
     assert(_roi.top == 0 && _roi.left == 0);
-    assert(_src.data != nullptr && _src.length >= _roi.width*_roi.height);
+    assert(_src.data != nullptr && _src.length >= _roi.width()*_roi.height());
     // directly uses buffer data without copying
-    cv::Mat mat(_roi.height, _roi.width, CV_UC1, _src.data);
+    cv::Mat mat(_roi.height(), _roi.width(), cv::CV_UC1, _src.data);
 
     cv::imshow("Software render", mat);
     cv::waitKey(1000);
