@@ -5,12 +5,14 @@
 
 class Buffer
 {
-public: size_t length;
-public: std::string name;
+  public: size_t length;
+  public: std::string name;
 
-public: enum class role : int {COLOR = 1, DEPTH, STENCIL, VERTEX, INDEX, BITMAP, OTHER};
+  public: enum class Role : int {COLOR = 1, DEPTH, STENCIL, VERTEX, INDEX, BITMAP, OTHER};
 
-public: void *data = nullptr;
+  public: Role buffer_role = Role::COLOR;
+
+  public: void *data = nullptr;
 };
 
 class Line2
@@ -19,7 +21,12 @@ class Line2
   public: float b;
   public: float c;
 
-  public: Line2(const vec2f p1, const vec2f p2);
+  public: Line2(const vec2f p1, const vec2f p2)
+  {
+    this->a = p2.y - p1.y;
+    this->b = p1.x - p2.x;
+    this->c = p2.x*p1.y - p1.x*p2.y;
+  }
 
   public: float atY(const float _y) const
   {
@@ -43,9 +50,21 @@ class Line2
 
 class Triangle
 {
-  private: vec3fi data[3];
+  private: vec3fi data[3] = {{0, 0, 0, -1},
+                             {0, 0, 0, -1},
+                             {0, 0, 0, -1}};
 
-  public: Triangle() = default;
+  public: Triangle()
+  {}
+
+  public: Triangle(const vec3fi _a, const vec3fi _b, const vec3fi _c)
+  {
+    this->data[0] = _a;
+    this->data[1] = _b;
+    this->data[2] = _c;
+
+    this->sortY();
+  }
 
   public: Triangle(const vec3fi _data[3])
   {
@@ -68,26 +87,24 @@ class Triangle
     });
   }
 
-  public: float top() const noexcept
-  {
+  public: float top() const noexcept {
     return data[0].y;
   }
 
-  public: float bottom() const noexcept
-  {
+  public: float bottom() const noexcept {
     return data[2].y;
   }
 
   public: float left(const float _y) const noexcept
   {
-    assert(this->isAligned())
+    assert(this->isAligned());
     assert(_y >= this->top());
     assert(_y <= this->bottom());
 
     if (this->isDelta())
-      return Line2(data[0].xy, data[1]).atY(_y);
+      return Line2(data[0].xy(), data[1].xy()).atY(_y);
     else
-      return Line2(data[0].xy, data[2]).atY(_y);
+      return Line2(data[0].xy(), data[2].xy()).atY(_y);
   }
 
   public: float right(const float _y) const noexcept
@@ -97,9 +114,9 @@ class Triangle
     assert(_y <= this->bottom());
 
     if (this->isDelta())
-      return Line2(data[0].xy, data[2]).atY(_y);
+      return Line2(data[0].xy(), data[2].xy()).atY(_y);
     else
-      return Line2(data[1].xy, data[2]).atY(_y);
+      return Line2(data[1].xy(), data[2].xy()).atY(_y);
   }
 
   public: bool isAligned() const noexcept
@@ -123,18 +140,30 @@ class Triangle
     return (data[0].y == data[1].y);
   }
 
+  public: vec3fi left() const noexcept {
+      return data[this->isDelta() ? 1 : 0];
+  }
+
+  public: vec3fi right() const noexcept {
+      return data[this->isDelta() ? 2 : 1];
+  }
+
+  public: vec3fi peak() const noexcept {
+      return data[this->isDelta() ? 0 : 2];
+  }
+
   public: std::pair<Triangle, Triangle> split()
   {
     assert(!this->isAligned());
 
 
-    vec2f split_point2(Line2(data[0].xy, data[1].xy).atY(data[1].y), data[1].y);
-    auto t = (split_point2 - data[1].xy).length()/(data[2].xy - data[0].xy).length();
+    vec2f split_point2(Line2(data[0].xy(), data[1].xy()).atY(data[1].y), data[1].y);
+    auto t = (split_point2 - data[1].xy()).length()/(data[2].xy() - data[0].xy()).length();
 
-    vec3fi split_point(vec3f::lerp(data[0].xyz, data[2].xyz, t), -1);
+    vec3fi split_point(vec3f::lerp(data[0].xyz(), data[2].xyz(), t), -1);
 
-    Triangle delta{{data[0], data[1], split_point}};
-    Triangle nabla{{data[1], split_point, data[2]}};
+    Triangle delta{data[0], data[1], split_point};
+    Triangle nabla{data[1], split_point, data[2]};
 
     if (delta.data[2].x > delta.data[1].x)
       std::swap(delta.data[1], delta.data[2]);
@@ -143,7 +172,34 @@ class Triangle
 
     return {delta, nabla};
   }
+
+  friend Triangle operator+(const Triangle _a, const float _b);
+  friend Triangle operator*(const Triangle _a, const float _b);
+  friend Triangle operator*(const Triangle _a, const vec3fi _b);
 };
+
+Triangle operator+(const Triangle _a, const float _b)
+{
+  auto summand = vec3f{_b, _b, _b};
+
+  return {_a.data[0].xyz() + summand,
+          _a.data[1].xyz() + summand,
+          _a.data[2].xyz() + summand};
+}
+
+Triangle operator*(const Triangle _a, const float _b)
+{
+  return {_a.data[0].xyz() * _b,
+          _a.data[1].xyz() * _b,
+          _a.data[2].xyz() * _b};
+}
+
+Triangle operator*(const Triangle _a, const vec3fi _b)
+{
+  return {_a.data[0] * _b,
+          _a.data[1] * _b,
+          _a.data[2] * _b};
+}
 
 using Soup = std::vector<Triangle>;
 
@@ -184,7 +240,7 @@ inline bool inRange(const T _val, const T _start, const T _end) { return (_val >
 
 class Rasterizer
 {
-  public: void resterize(Soup & _triangles, const Buffer & _dst, const Recti _dst_rect)
+  public: void rasterize(Soup & _triangles, const Recti _dst_rect, Buffer & _dst)
   {
     std::vector<Scanline> line_batch(_dst_rect.height());
 
@@ -202,10 +258,10 @@ class Rasterizer
         _triangles.push_back(nabla);
       }
 
-      auto triag = (((*iter)+1)/2)*vec3fi(_dst_rect.width(), _dst_rect.height(), 1, 1);
+      auto triag = (((*iter)+1)*0.5f)*vec3fi(_dst_rect.width(), _dst_rect.height(), 1, 1);
 
       // create records in corresponding scanlines
-      for (int i = triag.top(); i <= triag.bottom; ++i)
+      for (int i = triag.top(); i <= triag.bottom(); ++i)
       {
         float t = (i-triag.top()) / (triag.bottom()-triag.top());
         assert(inRange(t, 0.f, 1.f));
@@ -213,8 +269,8 @@ class Rasterizer
         if (triag.isNabla())
           t = 1-t;
 
-        vec3f start = vec3f::lerp(triag.peak(), triag.left(), t);
-        vec3f end = vec3f::lerp(triag.peak(), triag.right(), t);
+        vec3f start = vec3f::lerp(triag.peak().xyz(), triag.left().xyz(), t);
+        vec3f end = vec3f::lerp(triag.peak().xyz(), triag.right().xyz(), t);
 
         Scanline::Record sl_record = {
           .start = start.x,
@@ -235,9 +291,9 @@ class Rasterizer
     {
       for (auto record : line.items)
       {
-        for (int i = line.start; i <= line.end; ++i)
+        for (int i = record.start; i <= record.end; ++i)
         {
-          int id = _dst_rect.width*line.num+i;
+          int id = _dst_rect.width()*line.id+i;
           static_cast<uint8_t*>(_dst.data)[id] = 127;
         }
       }
@@ -253,7 +309,7 @@ class Display
     assert(_roi.top == 0 && _roi.left == 0);
     assert(_src.data != nullptr && _src.length >= _roi.width()*_roi.height());
     // directly uses buffer data without copying
-    cv::Mat mat(_roi.height(), _roi.width(), cv::CV_UC1, _src.data);
+    cv::Mat mat(_roi.height(), _roi.width(), CV_8UC1, _src.data);
 
     cv::imshow("Software render", mat);
     cv::waitKey(1000);
@@ -261,4 +317,32 @@ class Display
 
   public: int width = 320;
   public: int height = 240;
+};
+
+
+int main()
+{
+
+  Soup soup;
+
+  soup.push_back({{  0.f, 0.5f,  0.f, 1},
+                    {-0.5f,-0.5f, 0.1f, 2},
+                    { 0.5f,-0.5f, 0.2f, 3}});
+
+
+  Buffer rbuf;
+  rbuf.length = 320 * 240 * 1;
+  rbuf.data = new uint8_t[rbuf.length];
+  rbuf.buffer_role = Buffer::Role::COLOR;
+  rbuf.name = "Color renderbuffer 0";
+
+  auto roi = Rect<int>(0, 0, 320 - 1, 240 - 1);
+
+  Rasterizer raster;
+  raster.rasterize(soup, roi, rbuf);
+
+  Display display;
+  display.present(rbuf, roi);
+
+  return 0;
 }

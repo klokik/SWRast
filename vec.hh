@@ -1,3 +1,7 @@
+#pragma once
+
+#include <cmath>
+
 
 template<class T>
 class vec2
@@ -5,6 +9,10 @@ class vec2
   public: vec2(const T _x, const T _y):
     x(_x), y(_y)
   {}
+
+  public: constexpr T length() {
+    return std::sqrt(x*x + y*y);
+  }
 
   public: T x;
   public: T y;
@@ -21,6 +29,12 @@ class vec3
     x(_xy.x), y(_xy.y), z(_z)
   {}
 
+  public: static vec3<T> lerp(const vec3<T> _a, const vec3<T> _b, const float _t)
+  {
+    assert(_t >= 0 && _t <= 1);
+
+    return (_t*_a + (1-_t)*_b);
+  }
  
   public: T x;
   public: T y;
@@ -42,13 +56,29 @@ class vec31
     x(_xyz.x), y(_xyz.y), z(_xyz.z), w(_w)
   {}
 
+  // empty index
   public: vec31(const T _x, const T _y, const T _z):
     x(_x), y(_y), z(_z)
+  {}
+
+  // empty index, vector variant
+  public: vec31(const vec3<T> _xyz):
+    x(_xyz.x), y(_xyz.y), z(_xyz.z)
   {}
 
   public: vec31(const vec2<T> _xy, const T _z):
     x(_xy.x), y(_xy.y), z(_z)
   {}
+
+  public: vec2<T> xy() const noexcept
+  {
+    return {this->x, this->y};
+  }
+
+  public: vec3<T> xyz() const noexcept
+  {
+    return {this->x, this->y, this->z};
+  }
 
   public: T x;
   public: T y;
@@ -135,7 +165,7 @@ static vec31<T, U> operator*(const vec31<T, U> _a, const T _c) {
 }
 
 template<class T, class U>
-static vec31<T, U> operator*(const T _c, const vec3i<T, U> _a) {
+static vec31<T, U> operator*(const T _c, const vec31<T, U> _a) {
   return _a*_c;
 }
 
