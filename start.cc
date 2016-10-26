@@ -1,3 +1,6 @@
+#include <iostream>
+#include <random>
+
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 
@@ -76,7 +79,7 @@ class Triangle
   public: void sortY()
   {
     std::sort(&this->data[0], &this->data[3], [](auto a, auto b) {
-      return a.y < b.y;
+      return a.y > b.y;
     });
   }
 
@@ -156,18 +159,17 @@ class Triangle
   {
     assert(!this->isAligned());
 
-
-    vec2f split_point2(Line2(data[0].xy(), data[1].xy()).atY(data[1].y), data[1].y);
-    auto t = (split_point2 - data[1].xy()).length()/(data[2].xy() - data[0].xy()).length();
+    vec2f split_point2(Line2(data[0].xy(), data[2].xy()).atY(data[1].y), data[1].y);
+    auto t = (split_point2 - data[0].xy()).length()/(data[2].xy() - data[0].xy()).length();
 
     vec3fi split_point(vec3f::lerp(data[0].xyz(), data[2].xyz(), t), -1);
 
     Triangle delta{data[0], data[1], split_point};
     Triangle nabla{data[1], split_point, data[2]};
 
-    if (delta.data[2].x > delta.data[1].x)
+    if (delta.data[2].x < delta.data[1].x)
       std::swap(delta.data[1], delta.data[2]);
-    if (nabla.data[1].x > nabla.data[0].x)
+    if (nabla.data[1].x < nabla.data[0].x)
       std::swap(nabla.data[1], nabla.data[0]);
 
     return {delta, nabla};
@@ -245,8 +247,14 @@ class Rasterizer
     std::vector<Scanline> line_batch(_dst_rect.height());
 
     // fill scanlines
-    for (auto iter = _triangles.begin(); iter != _triangles.end(); ++iter)
+    Soup nablas;
+    auto *triangles_range = &_triangles;
+    for (auto iter = triangles_range->begin(); iter != triangles_range->end(); ++iter)
     {
+      // continue thru the rest of triangles - nablas
+      if (iter == triangles_range->end())
+        triangles_range = &nablas;
+
       // split triangles
       if (!iter->isAligned())
       {
@@ -254,16 +262,20 @@ class Rasterizer
         Triangle nabla;
         std::tie(delta, nabla) = iter->split();
 
+        assert(delta.isAligned());
+        assert(nabla.isAligned());
+
         *iter = delta;
-        _triangles.push_back(nabla);
+        // _triangles.push_back(nabla);
+        nablas.push_back(nabla);
       }
 
       auto triag = (((*iter)+1)*0.5f)*vec3fi(_dst_rect.width(), _dst_rect.height(), 1, 1);
 
       // create records in corresponding scanlines
-      for (int i = triag.top(); i <= triag.bottom(); ++i)
+      for (int i = triag.top(); i >= triag.bottom(); --i)
       {
-        float t = (i-triag.top()) / (triag.bottom()-triag.top());
+        float t = (triag.top()-i) / (triag.top()-triag.bottom());
         assert(inRange(t, 0.f, 1.f));
 
         if (triag.isNabla())
@@ -312,7 +324,16 @@ class Display
     cv::Mat mat(_roi.height(), _roi.width(), CV_8UC1, _src.data);
 
     cv::imshow("Software render", mat);
-    cv::waitKey(1000);
+  }
+
+  public: void commit()
+  {
+    cv::waitKey(30);
+  }
+
+  public: void pause()
+  {
+    cv::waitKey(0);
   }
 
   public: int width = 320;
@@ -325,9 +346,21 @@ int main()
 
   Soup soup;
 
-  soup.push_back({{  0.f, 0.5f,  0.f, 1},
-                    {-0.5f,-0.5f, 0.1f, 2},
-                    { 0.5f,-0.5f, 0.2f, 3}});
+  std::random_device rd;
+  std::mt19937 rng(rd());
+  std::uniform_real_distribution<float> dist(-1, 1);
+
+  for (int i = 0; i < 1; ++i)
+  {
+
+    soup.push_back({{ dist(rng), dist(rng), dist(rng), 1},
+                    { dist(rng), dist(rng), dist(rng), 2},
+                    { dist(rng), dist(rng), dist(rng), 3}});
+  }
+
+  // soup.push_back({{ 0.0f, 0.5f, 0.0f, 1},
+  //                 {-0.5f,-0.5f, 0.0f, 2},
+  //                 { 0.2f,-0.6f, 0.0f, 3}});
 
 
   Buffer rbuf;
@@ -343,6 +376,8 @@ int main()
 
   Display display;
   display.present(rbuf, roi);
+  display.commit();
+  display.pause();
 
   return 0;
 }
