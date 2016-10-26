@@ -33,7 +33,7 @@ class vec3
   {
     assert(_t >= 0 && _t <= 1);
 
-    return (_t*_a + (1-_t)*_b);
+    return ((1-_t)*_a + _t*_b);
   }
  
   public: T x;
