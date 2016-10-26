@@ -4,7 +4,7 @@ project(SWRast)
 
 set(CMAKE_CXX_STANDARD 14)
 
-set(CMAKE_CXX_FLAGS "--std=c++14 ${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "--std=c++14 -g ${CMAKE_CXX_FLAGS}")
 
 find_package(OpenCV REQUIRED)
 
