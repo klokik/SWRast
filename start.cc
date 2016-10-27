@@ -51,6 +51,14 @@ class Line2
   }*/
 };
 
+inline constexpr float areClose(const float _a, const float _b)
+{
+  const float eps = 1e-4;
+  auto diff = _a - _b;
+
+  return (-eps < diff) && (diff < eps);
+}
+
 class Triangle
 {
   private: vec3fi data[3] = {{0, 0, 0, -1},
@@ -124,23 +132,23 @@ class Triangle
 
   public: bool isAligned() const noexcept
   {
-    return  (data[0].y == data[1].y) ||
-            (data[1].y == data[2].y) ||
-            (data[0].y == data[2].y);
+    return  areClose(data[0].y, data[1].y) ||
+            areClose(data[1].y, data[2].y) ||
+            areClose(data[0].y, data[2].y);
   }
 
   public: bool isDelta() const noexcept
   {
     assert(this->isAligned());
 
-    return (data[1].y == data[2].y);
+    return areClose(data[1].y, data[2].y);
   }
 
   public: bool isNabla() const noexcept
   {
     assert(this->isAligned());
 
-    return (data[0].y == data[1].y);
+    return areClose(data[0].y, data[1].y);
   }
 
   public: vec3fi left() const noexcept {
@@ -248,12 +256,13 @@ class Rasterizer
 
     // fill scanlines
     Soup nablas;
-    auto *triangles_range = &_triangles;
-    for (auto iter = triangles_range->begin(); iter != triangles_range->end(); ++iter)
+    for (auto iter = _triangles.begin(); ; ++iter)
     {
       // continue thru the rest of triangles - nablas
-      if (iter == triangles_range->end())
-        triangles_range = &nablas;
+      if (iter == _triangles.end())
+        iter = nablas.begin();
+      else if (iter == nablas.end())
+        break;
 
       // split triangles
       if (!iter->isAligned())
@@ -350,7 +359,7 @@ int main()
   std::mt19937 rng(rd());
   std::uniform_real_distribution<float> dist(-1, 1);
 
-  for (int i = 0; i < 1; ++i)
+  for (int i = 0; i < 10; ++i)
   {
 
     soup.push_back({{ dist(rng), dist(rng), dist(rng), 1},
@@ -366,6 +375,7 @@ int main()
   Buffer rbuf;
   rbuf.length = 320 * 240 * 1;
   rbuf.data = new uint8_t[rbuf.length];
+  memset(rbuf.data, 0, rbuf.length);
   rbuf.buffer_role = Buffer::Role::COLOR;
   rbuf.name = "Color renderbuffer 0";
 
