@@ -1,5 +1,8 @@
 #include <iostream>
+#include <fstream>
 #include <random>
+#include <sstream>
+#include <string>
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -56,8 +59,12 @@ inline constexpr float areClose(const float _a, const float _b)
   const float eps = 1e-4;
   auto diff = _a - _b;
 
-  return (-eps < diff) && (diff < eps);
+  return _a == _b;
+  // return (-eps < diff) && (diff < eps);
 }
+
+class Triangle;
+using Soup = std::vector<Triangle>;
 
 class Triangle
 {
@@ -74,7 +81,7 @@ class Triangle
     this->data[1] = _b;
     this->data[2] = _c;
 
-    this->sortY();
+    this->sort();
   }
 
   public: Triangle(const vec3fi _data[3])
@@ -96,6 +103,25 @@ class Triangle
     std::sort(&this->data[0], &this->data[3], [](auto a, auto b) {
       return a.x < b.x;
     });
+  }
+
+  public: void sort()
+  {
+    this->sortY();
+
+    if (this->isAligned())
+    {
+      if (this->isDelta())
+      {
+        if (data[2].x < data[1].x)
+          std::swap(data[1], data[2]);
+      }
+      else // nabla
+      {
+        if (data[1].x < data[0].x)
+          std::swap(data[1], data[0]);
+      }
+    }
   }
 
   public: float top() const noexcept {
@@ -172,6 +198,9 @@ class Triangle
 
     vec3fi split_point(vec3f::lerp(data[0].xyz(), data[2].xyz(), t), -1);
 
+    // to avoid calculation error
+    split_point.y = data[1].y;
+
     Triangle delta{data[0], data[1], split_point};
     Triangle nabla{data[1], split_point, data[2]};
 
@@ -186,6 +215,8 @@ class Triangle
   friend Triangle operator+(const Triangle _a, const float _b);
   friend Triangle operator*(const Triangle _a, const float _b);
   friend Triangle operator*(const Triangle _a, const vec3fi _b);
+  friend void rotateSoupX(const float _phi, Soup &_soup);
+  friend void rotateSoupY(const float _phi, Soup &_soup);
 };
 
 Triangle operator+(const Triangle _a, const float _b)
@@ -211,7 +242,76 @@ Triangle operator*(const Triangle _a, const vec3fi _b)
           _a.data[2] * _b};
 }
 
-using Soup = std::vector<Triangle>;
+// using Soup = std::vector<Triangle>;
+
+void rotateSoupY(const float _phi, Soup &_soup)
+{
+  float s = std::sin(_phi);
+  float c = std::cos(_phi);
+
+  for (auto &triag : _soup)
+  {
+    for (auto &vtx : triag.data)
+    {
+      vec3fi xz = vtx;
+      vtx.x = xz.x*c - xz.z*s;
+      vtx.z = xz.x*s + xz.z*c;
+    }
+    triag.sort();
+  }
+}
+
+void rotateSoupX(const float _phi, Soup &_soup)
+{
+  float s = std::sin(_phi);
+  float c = std::cos(_phi);
+
+  for (auto &triag : _soup)
+  {
+    for (auto &vtx : triag.data)
+    {
+      vec3fi yz = vtx;
+      vtx.y = yz.y*c - yz.z*s;
+      vtx.z = yz.y*s + yz.z*c;
+    }
+    triag.sort();
+  }
+}
+
+class SoupLoader
+{
+  public: static int loadStl(const std::string &_filename, Soup &_dst)
+  {
+    int ret = 0;
+    std::ifstream ifs(_filename, std::ios_base::in);
+
+    char line[256] = {0};
+    std::vector<vec3fi> tris;
+    tris.reserve(3);
+
+    while (ifs.getline(&line[0], 256))
+    {
+      std::stringstream sstr(line);
+      std::string word;
+      sstr >> word;
+
+      if (word == "endloop")
+      {
+        _dst.emplace_back(tris.data());
+        tris.clear();
+      }
+
+      if (word != "vertex")
+        continue;
+
+      float x, y, z;
+      sstr >> x >> y >> z;
+      tris.emplace_back(x, y, z, ret++);
+    }
+
+    ifs.close();
+  }
+};
 
 class Scanline
 {
@@ -260,7 +360,12 @@ class Rasterizer
     {
       // continue thru the rest of triangles - nablas
       if (iter == _triangles.end())
+      {
+        if (nablas.empty())
+          break;
+
         iter = nablas.begin();
+      }
       else if (iter == nablas.end())
         break;
 
@@ -275,7 +380,6 @@ class Rasterizer
         assert(nabla.isAligned());
 
         *iter = delta;
-        // _triangles.push_back(nabla);
         nablas.push_back(nabla);
       }
 
@@ -284,6 +388,11 @@ class Rasterizer
       // create records in corresponding scanlines
       for (int i = triag.top(); i >= triag.bottom(); --i)
       {
+        // avoid invisible triangles
+        // if (areClose(triag.top()-triag.bottom(), 0))
+        if (std::round(triag.top()) == std::round(triag.bottom()))
+          continue;
+
         float t = (triag.top()-i) / (triag.top()-triag.bottom());
         assert(inRange(t, 0.f, 1.f));
 
@@ -292,6 +401,10 @@ class Rasterizer
 
         vec3f start = vec3f::lerp(triag.peak().xyz(), triag.left().xyz(), t);
         vec3f end = vec3f::lerp(triag.peak().xyz(), triag.right().xyz(), t);
+
+        // avoid too narrow edges
+        if (std::round(end.x) == std::round(start.x))
+          continue;
 
         Scanline::Record sl_record = {
           .start = start.x,
@@ -308,14 +421,34 @@ class Rasterizer
 
     // draw scanlines
     assert(_dst_rect.left == 0 && _dst_rect.top == 0);
+    std::vector<float> z_buf(_dst_rect.width(), 1.0f);
+
     for (auto & line : line_batch)
     {
+      // clear z-buffer
+      for (auto &&z : z_buf)
+        z = 1.0f;
+
       for (auto record : line.items)
       {
-        for (int i = record.start; i <= record.end; ++i)
+        for (int i = std::round(record.start); i <= std::round(record.end); ++i)
+        // for (auto i : {std::round(record.start), std::round(record.end)})
         {
-          int id = _dst_rect.width()*line.id+i;
-          static_cast<uint8_t*>(_dst.data)[id] = 127;
+          int id = _dst_rect.width()*(_dst_rect.bottom - line.id)+i;
+          float t = (i-std::round(record.start)) /
+                      (std::round(record.end)-std::round(record.start));
+          assert(inRange(t, 0.f, 1.f));
+
+          // FIXME: push converted depth to scanlines
+          auto depth = 1-((1-t)*record.depth_start + t*record.depth_end);
+
+          if (z_buf[i] < depth)
+            continue;
+
+          z_buf[i] = depth;
+
+          auto color = static_cast<uint8_t>(depth*255);
+          static_cast<uint8_t*>(_dst.data)[id] = color;
         }
       }
     }
@@ -337,16 +470,13 @@ class Display
 
   public: void commit()
   {
-    cv::waitKey(30);
+    cv::waitKey(1);
   }
 
   public: void pause()
   {
     cv::waitKey(0);
   }
-
-  public: int width = 320;
-  public: int height = 240;
 };
 
 
@@ -359,34 +489,47 @@ int main()
   std::mt19937 rng(rd());
   std::uniform_real_distribution<float> dist(-1, 1);
 
-  for (int i = 0; i < 10; ++i)
-  {
+  // for (int i = 0; i < 100; ++i)
+  // {
+  //   soup.push_back({{ dist(rng), dist(rng), dist(rng), 1},
+  //                   { dist(rng), dist(rng), dist(rng), 2},
+  //                   { dist(rng), dist(rng), dist(rng), 3}});
+  // }
 
-    soup.push_back({{ dist(rng), dist(rng), dist(rng), 1},
-                    { dist(rng), dist(rng), dist(rng), 2},
-                    { dist(rng), dist(rng), dist(rng), 3}});
-  }
+  SoupLoader::loadStl("../susan.stl", soup);
+  // SoupLoader::loadStl("../sphere.stl", soup);
 
   // soup.push_back({{ 0.0f, 0.5f, 0.0f, 1},
   //                 {-0.5f,-0.5f, 0.0f, 2},
   //                 { 0.2f,-0.6f, 0.0f, 3}});
 
 
+  auto roi = Rect<int>(0, 0, 240 - 1, 240 - 1);
   Buffer rbuf;
-  rbuf.length = 320 * 240 * 1;
+
+  rbuf.length = roi.width() * roi.height() * 1;
   rbuf.data = new uint8_t[rbuf.length];
-  memset(rbuf.data, 0, rbuf.length);
   rbuf.buffer_role = Buffer::Role::COLOR;
   rbuf.name = "Color renderbuffer 0";
 
-  auto roi = Rect<int>(0, 0, 320 - 1, 240 - 1);
-
   Rasterizer raster;
-  raster.rasterize(soup, roi, rbuf);
-
   Display display;
-  display.present(rbuf, roi);
-  display.commit();
+
+
+  for (int i = 0; i < 1000; ++i)
+  {
+    Soup soup_copy = soup;
+    rotateSoupX(-0.333f*i, soup_copy);
+    rotateSoupY(0.1f*i, soup_copy);
+
+    memset(rbuf.data, 0, rbuf.length);
+    raster.rasterize(soup_copy, roi, rbuf);
+
+    display.present(rbuf, roi);
+    display.commit();
+
+  }
+
   display.pause();
 
   return 0;
