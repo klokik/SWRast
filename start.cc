@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <fstream>
 #include <random>
@@ -158,9 +159,9 @@ class Triangle
 
   public: bool isAligned() const noexcept
   {
-    return  areClose(data[0].y, data[1].y) ||
-            areClose(data[1].y, data[2].y) ||
-            areClose(data[0].y, data[2].y);
+    return  (data[0].y == data[1].y) ||
+            (data[1].y == data[2].y) ||
+            (data[0].y == data[2].y);
   }
 
   public: bool isDelta() const noexcept
@@ -210,6 +211,15 @@ class Triangle
       std::swap(nabla.data[1], nabla.data[0]);
 
     return {delta, nabla};
+  }
+
+  public: vec3f getBaricentric(const vec3f _xyz)
+  {
+    Mat3f3 mat{ data[0].x, data[1].x, data[2].x,
+                data[0].y, data[1].y, data[2].y,
+                data[0].z, data[1].z, data[2].z};
+
+    return Mat3f3::linSolve(mat, _xyz);
   }
 
   friend Triangle operator+(const Triangle _a, const float _b);
@@ -385,15 +395,20 @@ class Rasterizer
 
       auto triag = (((*iter)+1)*0.5f)*vec3fi(_dst_rect.width(), _dst_rect.height(), 1, 1);
 
-      // create records in corresponding scanlines
-      for (int i = triag.top(); i >= triag.bottom(); --i)
-      {
-        // avoid invisible triangles
-        // if (areClose(triag.top()-triag.bottom(), 0))
-        if (std::round(triag.top()) == std::round(triag.bottom()))
-          continue;
 
-        float t = (triag.top()-i) / (triag.top()-triag.bottom());
+      // create records in corresponding scanlines
+      int top =     std::min((int)std::lround(triag.top()), _dst_rect.height()-1);
+      int bottom =  std::max((int)std::lround(triag.bottom()), 0);
+
+      float inv_height = 1.f / (top - bottom);
+
+      // avoid invisible triangles
+      if (top == bottom)
+        continue;
+
+      for (int i = top; i >= bottom; --i)
+      {
+        float t = (top - i)*inv_height;
         assert(inRange(t, 0.f, 1.f));
 
         if (triag.isNabla())
@@ -431,16 +446,19 @@ class Rasterizer
 
       for (auto record : line.items)
       {
-        for (int i = std::round(record.start); i <= std::round(record.end); ++i)
-        // for (auto i : {std::round(record.start), std::round(record.end)})
+        int start = std::round(record.start);
+        int end = std::round(record.end);
+        float dt = (record.depth_end - record.depth_start) / (end - start);
+
+        auto a_start = std::max(start, 0);
+        auto a_end = std::min(end, _dst_rect.width()-1);
+
+        for (int i = a_start; i <= a_end; ++i)
+        // for (auto i : a_start, a_end})
         {
           int id = _dst_rect.width()*(_dst_rect.bottom - line.id)+i;
-          float t = (i-std::round(record.start)) /
-                      (std::round(record.end)-std::round(record.start));
-          assert(inRange(t, 0.f, 1.f));
 
-          // FIXME: push converted depth to scanlines
-          auto depth = 1-((1-t)*record.depth_start + t*record.depth_end);
+          auto depth = 1 - (record.depth_start + (i - start)*dt);
 
           if (z_buf[i] < depth)
             continue;
@@ -489,11 +507,14 @@ int main()
   std::mt19937 rng(rd());
   std::uniform_real_distribution<float> dist(-1, 1);
 
-  // for (int i = 0; i < 100; ++i)
+  // for (int i = 0; i < 10; ++i)
   // {
-  //   soup.push_back({{ dist(rng), dist(rng), dist(rng), 1},
-  //                   { dist(rng), dist(rng), dist(rng), 2},
-  //                   { dist(rng), dist(rng), dist(rng), 3}});
+  //   Triangle tri{ { dist(rng), dist(rng), dist(rng), 1},
+  //                 { dist(rng), dist(rng), dist(rng), 2},
+  //                 { dist(rng), dist(rng), dist(rng), 3}};
+
+  //   if (!tri.isAligned())
+  //     soup.push_back(tri);
   // }
 
   SoupLoader::loadStl("../susan.stl", soup);
@@ -504,7 +525,7 @@ int main()
   //                 { 0.2f,-0.6f, 0.0f, 3}});
 
 
-  auto roi = Rect<int>(0, 0, 240 - 1, 240 - 1);
+  auto roi = Rect<int>(0, 0, 720 - 1, 720 - 1);
   Buffer rbuf;
 
   rbuf.length = roi.width() * roi.height() * 1;
@@ -516,7 +537,10 @@ int main()
   Display display;
 
 
-  for (int i = 0; i < 1000; ++i)
+  std::chrono::time_point<std::chrono::system_clock> start, end;
+  start = std::chrono::system_clock::now();
+  int frames = 100;
+  for (int i = 0; i < frames; ++i)
   {
     Soup soup_copy = soup;
     rotateSoupX(-0.333f*i, soup_copy);
@@ -527,9 +551,15 @@ int main()
 
     display.present(rbuf, roi);
     display.commit();
-
   }
+  end = std::chrono::system_clock::now();
 
+  std::chrono::duration<double> elapsed = end-start;
+
+  std::cout << "Avg FPS: " << frames/elapsed.count() << std::endl;
+
+  display.present(rbuf, roi);
+  display.commit();
   display.pause();
 
   return 0;
