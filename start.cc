@@ -190,6 +190,10 @@ class Triangle
       return data[this->isDelta() ? 0 : 2];
   }
 
+  public: const vec3fi &get(int _num) const {
+    return data[_num];
+  }
+
   public: std::pair<Triangle, Triangle> split()
   {
     assert(!this->isAligned());
@@ -215,9 +219,9 @@ class Triangle
 
   public: vec3f getBaricentric(const vec3f _xyz)
   {
-    Mat3f3 mat{ data[0].x, data[1].x, data[2].x,
+    Mat3f3 mat{{data[0].x, data[1].x, data[2].x,
                 data[0].y, data[1].y, data[2].y,
-                data[0].z, data[1].z, data[2].z};
+                data[0].z, data[1].z, data[2].z}};
 
     return Mat3f3::linSolve(mat, _xyz);
   }
@@ -330,6 +334,9 @@ class Scanline
     float end;
     float depth_start;
     float depth_end;
+    int triangle_id;
+    vec3f baric_start;
+    vec3f baric_end;
   };
 
   int id;
@@ -366,7 +373,8 @@ class Rasterizer
 
     // fill scanlines
     Soup nablas;
-    for (auto iter = _triangles.begin(); ; ++iter)
+    int index = 0;
+    for (auto iter = _triangles.begin(); ; ++iter, ++index)
     {
       // continue thru the rest of triangles - nablas
       if (iter == _triangles.end())
@@ -395,6 +403,8 @@ class Rasterizer
 
       auto triag = (((*iter)+1)*0.5f)*vec3fi(_dst_rect.width(), _dst_rect.height(), 1, 1);
 
+      // I'll regret that I've done it
+      *iter = triag;
 
       // create records in corresponding scanlines
       int top =     std::min((int)std::lround(triag.top()), _dst_rect.height()-1);
@@ -425,7 +435,10 @@ class Rasterizer
           .start = start.x,
           .end = end.x,
           .depth_start = start.z,
-          .depth_end = end.z
+          .depth_end = end.z,
+          .triangle_id = index,
+          .baric_start = triag.getBaricentric(start),
+          .baric_end = triag.getBaricentric(end),
         };
 
         // FIXME: init id once
@@ -433,6 +446,7 @@ class Rasterizer
         line_batch[i].items.push_back(sl_record);
       }
     }
+    _triangles.insert(_triangles.end(), nablas.begin(), nablas.end());
 
     // draw scanlines
     assert(_dst_rect.left == 0 && _dst_rect.top == 0);
@@ -446,12 +460,14 @@ class Rasterizer
 
       for (auto record : line.items)
       {
-        int start = std::round(record.start);
-        int end = std::round(record.end);
+        int start = std::lround(record.start);
+        int end = std::lround(record.end);
         float dt = (record.depth_end - record.depth_start) / (end - start);
 
         auto a_start = std::max(start, 0);
         auto a_end = std::min(end, _dst_rect.width()-1);
+
+        auto triag = _triangles[record.triangle_id];
 
         for (int i = a_start; i <= a_end; ++i)
         // for (auto i : a_start, a_end})
@@ -459,6 +475,13 @@ class Rasterizer
           int id = _dst_rect.width()*(_dst_rect.bottom - line.id)+i;
 
           auto depth = 1 - (record.depth_start + (i - start)*dt);
+
+          auto frag_b_coord = vec3f::lerp(record.baric_start, record.baric_end,
+                                          (float)(i-start)/(end-start));
+          auto frag_coord = triag.get(0)*frag_b_coord.x +
+                            triag.get(1)*frag_b_coord.y +
+                            triag.get(2)*frag_b_coord.z;
+          // auto depth = 1-frag_coord.z;
 
           if (z_buf[i] < depth)
             continue;
@@ -525,7 +548,7 @@ int main()
   //                 { 0.2f,-0.6f, 0.0f, 3}});
 
 
-  auto roi = Rect<int>(0, 0, 720 - 1, 720 - 1);
+  auto roi = Rect<int>(0, 0, 240 - 1, 240 - 1);
   Buffer rbuf;
 
   rbuf.length = roi.width() * roi.height() * 1;
